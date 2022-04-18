@@ -1,32 +1,33 @@
 use std::fs;
 use std::path::Path;
-use std::str::FromStr;
-use std::sync::mpsc::channel;
-use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Result, Watcher};
-use std::time::Duration;
+use std::sync::Arc;
 use base64::encode;
+use anyhow::{anyhow, Result};
+use async_native_tls::{Certificate, TlsConnector};
+use surf::{Client, Config, Url};
+use surf::http::auth::BasicAuth;
 
-fn main() -> Result<()> {
-    let (tx, rx) = channel();
-    // Automatically select the best implementation for your platform.
-    // You can also access each implementation directly e.g. INotifyWatcher.
-    let mut watcher = notify::watcher(tx, Duration::from_secs(5))?;
+#[async_std::main]
+async fn main() -> Result<()> {
+    let logfile = RiotLockFile::read("D:\\Games\\Riot Games\\League of Legends\\lockfile")?;
+    println!("{:?}", logfile);
+    let url = format!("{}://{}:{}", logfile.protocol, logfile.address, logfile.port).parse::<Url>()?;
+    println!("Url: {}", url);
+    let auth = BasicAuth::new(logfile.username, logfile.password);
+    println!("Auth: {:?}", auth);
+    let tls_config = TlsConnector::new()
+        .add_root_certificate(Certificate::from_pem(include_bytes!("../assets/riotgames.pem"))?);
 
-    // Add a path to be watched. All files and directories at that path and
-    // below will be monitored for changes.
-    watcher.watch("D:\\Games\\Riot Games\\League of Legends", RecursiveMode::NonRecursive)?;
+    let client: Client = Config::new()
+        .set_base_url(url)
+        .set_tls_config(Some(Arc::new(tls_config)))
+        .add_header(auth.name(), auth.value()).map_err(|e| anyhow!(e))?
+        .try_into()?;
 
-    loop {
-        match rx.recv() {
-            Ok(DebouncedEvent::Create(path) | DebouncedEvent::Write(path))
-                if path.ends_with("lockfile")=> println!("Connect\n{:?}", RiotLockFile::read(path)),
-            Ok(DebouncedEvent::NoticeRemove(path) | DebouncedEvent::Write(path))
-                if path.ends_with("lockfile")=> println!("Disconnect"),
-            Err(e) => println!("watch error: {:?}", e),
-            _ => {}
-        }
-    }
+    let req = client.get("/lol-summoner/v1/current-summoner");
+    //println!("Req: {}", req.build().url());
 
+    println!("{:?}", req.recv_string().await);
     Ok(())
 }
 
@@ -44,21 +45,21 @@ pub struct RiotLockFile {
 
 impl RiotLockFile {
 
-    pub fn read<P: AsRef<Path>>(path: P) -> Self {
-        let contents = fs::read_to_string(path).unwrap();
+    pub fn read<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let contents = fs::read_to_string(path)?;
 
         let pieces: Vec<&str> = contents.split(":").collect();
 
         let username = "riot".to_string();
         let address = "127.0.0.1".to_string();
         let process = pieces[0].to_string();
-        let pid = pieces[1].parse().unwrap();
-        let port = pieces[2].parse().unwrap();
+        let pid = pieces[1].parse()?;
+        let port = pieces[2].parse()?;
         let password = pieces[3].to_string();
         let protocol = pieces[4].to_string();
         let b64_auth = encode(format!("{}:{}", username, password).as_bytes());
 
-        Self {
+        Ok(Self {
             process,
             pid,
             port,
@@ -67,7 +68,7 @@ impl RiotLockFile {
             username,
             address,
             b64_auth,
-        }
+        })
     }
 
 }
