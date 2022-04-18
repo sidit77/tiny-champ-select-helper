@@ -1,15 +1,9 @@
 mod lcu;
 
-use std::borrow::Borrow;
-use std::ops::Deref;
 use anyhow::{Result};
-use async_tungstenite::tungstenite::Message;
 use log::LevelFilter;
 use serde_json::Value;
-use surf::{Client};
-use surf::http::auth::BasicAuth;
 use crate::lcu::RiotLockFile;
-use futures::prelude::*;
 
 #[async_std::main]
 async fn main() -> Result<()> {
@@ -20,8 +14,10 @@ async fn main() -> Result<()> {
         //.format_target(false)
         .init();
 
+
+
     let lockfile = RiotLockFile::read("D:\\Games\\Riot Games\\League of Legends\\lockfile")?;
-    let client = Client::try_from(lockfile.clone())?;
+    let (client, mut socket) = lockfile.connect().await?;
 
     println!("{:#}", serde_json::from_str::<Value>(&client.get("/lol-summoner/v1/current-summoner").recv_string().await.unwrap())?);
 
@@ -31,38 +27,37 @@ async fn main() -> Result<()> {
 
     //println!("{:#}", serde_json::from_str::<Value>(&client.get("/help").recv_string().await.unwrap())?);
 
-
-    let mut req = {
-        let auth = BasicAuth::new(lockfile.username, lockfile.password);
-        http::Request::builder()
-            .uri(format!("wss://{}:{}", lockfile.address, lockfile.port))
-            .header(auth.name().as_str(), auth.value().as_str())
-            .body(())
-            .unwrap()
-    };
-    let tls = async_native_tls::TlsConnector::new()
-        .danger_accept_invalid_certs(true);
-    println!("{:?}", req);
-    let (mut socket, resp) = async_tungstenite::async_std::connect_async_with_tls_connector(
-        req,
-        Some(tls)
-    ).await?;
-    println!("Response: {:?}", resp);
-    socket.send(Message::Text("[5, \"OnJsonApiEvent_lol-gameflow_v1_gameflow-phase\"]".into())).await?;
+    socket.subscribe("/lol-gameflow/v1/gameflow-phase").await?;
 
     loop {
-        let msg = socket.next().await.unwrap()?;
+        match socket.read().await {
+            Ok((uri, json)) if uri == "/lol-gameflow/v1/gameflow-phase" => {
+                match json.as_str() {
+                    Some("ChampSelect") => {
+                        log::debug!("Entering Champ Select");
+                        let player_ids = serde_json::from_str::<Value>(
+                            &client.get("/lol-champ-select/v1/session").recv_string().await.unwrap())?["myTeam"]
+                            .as_array().unwrap().iter()
+                            .map(|je| je["summonerId"].as_u64().unwrap())
+                            .filter(|id| *id > 0)
+                            .collect::<Vec<_>>();
 
-        match serde_json::from_str::<Value>(&msg.into_text()?) {
-            Ok(json) => println!("Received: {:#?}", json[2]["data"]),
-            Err(err) => println!("Error: {}", err)
+                        let player_names = serde_json::from_str::<Value>(
+                            &client.get(format!("/lol-summoner/v2/summoner-names?ids={:?}", player_ids)).recv_string().await.unwrap())?
+                            .as_array().unwrap().iter()
+                            .map(|je| je["displayName"].as_str().unwrap().to_string())
+                            .collect::<Vec<_>>();
+
+                        println!("{:?}", player_names);
+                    }
+                    v => log::warn!("Unknown gamestate: {:?}", v)
+                }
+            },
+            Ok(tuple) => log::warn!("Unknown event: {:?}", tuple),
+            Err(err) => log::warn!("{}", err)
         }
     }
-
-    Ok(())
 }
-
-
 
 /*
 use horrorshow::html;

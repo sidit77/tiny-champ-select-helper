@@ -3,8 +3,15 @@ use std::path::Path;
 use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use async_native_tls::{Certificate, TlsConnector};
+use async_tungstenite::async_std::{connect_async_with_tls_connector, ConnectStream};
+use async_tungstenite::WebSocketStream;
+use futures::{SinkExt, StreamExt};
+use http::Request;
 use surf::{Client, Config};
-use crate::BasicAuth;
+use surf::http::auth::BasicAuth;
+use serde::{Serialize, Deserialize};
+use serde_json::Value;
+use serde_repr::{Serialize_repr, Deserialize_repr};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RiotLockFile {
@@ -43,23 +50,85 @@ impl RiotLockFile {
         })
     }
 
-}
-
-impl TryFrom<RiotLockFile> for Client {
-    type Error = anyhow::Error;
-
-    fn try_from(lockfile: RiotLockFile) -> std::result::Result<Self, Self::Error> {
-        let url = format!("{}://{}:{}", lockfile.protocol, lockfile.address, lockfile.port).parse()?;
-        let auth = BasicAuth::new(lockfile.username, lockfile.password);
-        let tls_config = TlsConnector::new()
-            .add_root_certificate(Certificate::from_pem(include_bytes!("../assets/riotgames.pem"))?);
+    pub async fn connect(&self) -> Result<(Client, LcuWebSocket)> {
+        let auth = BasicAuth::new(&self.username, &self.password);
+        let cert = Certificate::from_pem(include_bytes!("../assets/riotgames.pem"))?;
 
         let client = Config::new()
-            .set_base_url(url)
-            .set_tls_config(Some(Arc::new(tls_config)))
+            .set_base_url(format!("{}://{}:{}", self.protocol, self.address, self.port).parse()?)
+            .set_tls_config(Some(Arc::new(TlsConnector::new()
+                .add_root_certificate(cert.clone()))))
             .add_header(auth.name(), auth.value()).map_err(|e| anyhow!(e))?
             .try_into()?;
 
-        Ok(client)
+        let (socket, _) = connect_async_with_tls_connector(
+            Request::builder()
+                .uri(format!("wss://{}:{}", self.address, self.port))
+                .header(auth.name().as_str(), auth.value().as_str())
+                .body(())
+                .unwrap(),
+            Some(TlsConnector::new()
+                .add_root_certificate(cert))
+        ).await?;
+
+        Ok((client, LcuWebSocket {
+            socket
+        }))
     }
+
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize_repr, Deserialize_repr)]
+#[repr(u32)]
+enum ActionCode {
+    Subscribe = 5,
+    Unsubscribe = 6,
+    Event = 8
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+struct Action(ActionCode, String);
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+struct Event(ActionCode, String, EventArgs);
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+struct EventArgs {
+    data: Value,
+    #[serde(rename = "eventType")]
+    event_type: String,
+    uri: String
+}
+
+#[derive(Debug)]
+pub struct LcuWebSocket {
+    socket: WebSocketStream<ConnectStream>
+}
+
+impl LcuWebSocket {
+
+    async fn send(&mut self, action: &Action) -> Result<()> {
+        self.socket.send(serde_json::to_string(action)?.into()).await?;
+        Ok(())
+    }
+
+    pub async fn subscribe(&mut self, endpoint: impl AsRef<str>) -> Result<()> {
+        self.send(&Action(ActionCode::Subscribe,
+                          format!("OnJsonApiEvent{}", endpoint.as_ref()).replace("/", "_"))).await
+    }
+
+    //pub async fn unsubscribe(&mut self, endpoint: impl AsRef<str>) -> Result<()> {
+    //    self.send(&Action(ActionCode::Unsubscribe,
+    //                      format!("OnJsonApiEvent{}", endpoint.as_ref()).replace("/", "_"))).await
+    //}
+
+    pub async fn read(&mut self) -> Result<(String, Value)> {
+        let msg = self.socket.next().await
+            .ok_or_else(||anyhow!("End of stream"))??;
+
+        let event = serde_json::from_str::<Event>(&msg.into_text()?)?;
+
+        Ok((event.2.uri, event.2.data))
+    }
+
 }
