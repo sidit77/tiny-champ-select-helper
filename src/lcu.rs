@@ -30,7 +30,7 @@ impl RiotLockFile {
     pub fn read<P: AsRef<Path>>(path: P) -> Result<Self> {
         let contents = fs::read_to_string(path)?;
 
-        let pieces: Vec<&str> = contents.split(":").collect();
+        let pieces: Vec<&str> = contents.split(':').collect();
 
         let username = "riot".to_string();
         let address = "127.0.0.1".to_string();
@@ -115,7 +115,7 @@ impl LcuWebSocket {
 
     pub async fn subscribe(&mut self, endpoint: impl AsRef<str>) -> Result<()> {
         self.send(&Action(ActionCode::Subscribe,
-                          format!("OnJsonApiEvent{}", endpoint.as_ref()).replace("/", "_"))).await
+                          format!("OnJsonApiEvent{}", endpoint.as_ref()).replace('/', "_"))).await
     }
 
     //pub async fn unsubscribe(&mut self, endpoint: impl AsRef<str>) -> Result<()> {
