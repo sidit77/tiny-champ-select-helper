@@ -4,6 +4,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use async_native_tls::{Certificate, TlsConnector};
 use async_tungstenite::async_std::{connect_async_with_tls_connector, ConnectStream};
+use async_tungstenite::tungstenite::Message;
 use async_tungstenite::WebSocketStream;
 use futures::{SinkExt, StreamExt};
 use http::Request;
@@ -123,12 +124,20 @@ impl LcuWebSocket {
     //}
 
     pub async fn read(&mut self) -> Result<(String, Value)> {
-        let msg = self.socket.next().await
-            .ok_or_else(||anyhow!("End of stream"))??;
+        loop {
+            let msg = self.socket.next().await
+                .ok_or_else(||anyhow!("End of stream"))??;
 
-        let event = serde_json::from_str::<Event>(&msg.into_text()?)?;
+            match msg {
+                Message::Text(str) if !str.is_empty() => {
+                    let event = serde_json::from_str::<Event>(&str)?;
+                    return Ok((event.2.uri, event.2.data))
+                }
+                _ => continue
+            }
 
-        Ok((event.2.uri, event.2.data))
+        }
+
     }
 
 }

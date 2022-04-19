@@ -1,10 +1,8 @@
-//mod lcu;
+mod lcu;
 
 use anyhow::{Result};
 use async_broadcast::{InactiveReceiver, Receiver, TrySendError};
 use async_std::{fs, task};
-use async_std::io::{BufReader, stdin};
-use async_std::io::prelude::BufReadExt;
 use async_std::sync::{Mutex, Arc};
 use async_std::task::JoinHandle;
 use futures::{FutureExt, select, StreamExt};
@@ -12,12 +10,14 @@ use log::LevelFilter;
 use tide::{Request, Response};
 use tide::http::mime;
 use tide_websockets::{Message, WebSocket};
+use crate::lcu::RiotLockFile;
 
 #[async_std::main]
 async fn main() -> Result<()> {
     env_logger::builder()
         .filter_level(LevelFilter::Debug)
         .filter(Some("tungstenite::protocol"), LevelFilter::Info)
+        .filter(Some("tungstenite::handshake::client"), LevelFilter::Info)
         .filter(Some("tide::log::middleware"), LevelFilter::Warn)
         .format_timestamp(None)
         //.format_target(false)
@@ -26,6 +26,34 @@ async fn main() -> Result<()> {
 
     let (mut sender, receiver) = async_broadcast::broadcast(10);
 
+    let lockfile = RiotLockFile::read("D:\\Games\\Riot Games\\League of Legends\\lockfile")?;
+
+    let _handler = async_std::task::spawn(async move {
+        sender.set_overflow(true);
+        let (_, mut socket) = lockfile.connect().await.unwrap();
+
+        socket.subscribe("/lol-gameflow/v1/gameflow-phase").await.unwrap();
+
+        loop {
+            match socket.read().await {
+                Ok((uri, json)) if uri == "/lol-gameflow/v1/gameflow-phase" => {
+                    match json.as_str() {
+                        Some(state) => match sender.try_broadcast(state.to_string()) {
+                            Ok(_) | Err(TrySendError::Inactive(_)) => {},
+                            Err(TrySendError::Closed(_)) => break,
+                            Err(TrySendError::Full(_)) => unreachable!()
+                        },
+                        None => log::warn!("Invalid data")
+                    }
+                },
+                Ok(tuple) => log::warn!("Unknown event: {:?}", tuple),
+                Err(err) => log::warn!("{}", err)
+            }
+        }
+    });
+
+
+    /*
     let _handler = async_std::task::spawn(async move {
         sender.set_overflow(true);
         let mut lines = BufReader::new(stdin()).lines().fuse();
@@ -41,6 +69,7 @@ async fn main() -> Result<()> {
             }
         }
     });
+     */
 
     let mut app = tide::with_state(ReceiveWrapper::new(receiver, "Unknown"));
     app.at("/").get(|_| async move {
