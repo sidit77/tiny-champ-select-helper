@@ -1,10 +1,12 @@
 //mod lcu;
 
 use anyhow::{Result};
-use async_broadcast::{InactiveReceiver, TrySendError};
-use async_std::{fs};
+use async_broadcast::{InactiveReceiver, Receiver, TrySendError};
+use async_std::{fs, task};
 use async_std::io::{BufReader, stdin};
 use async_std::io::prelude::BufReadExt;
+use async_std::sync::{Mutex, Arc};
+use async_std::task::JoinHandle;
 use futures::{FutureExt, select, StreamExt};
 use log::LevelFilter;
 use tide::{Request, Response};
@@ -40,15 +42,16 @@ async fn main() -> Result<()> {
         }
     });
 
-    let mut app = tide::with_state(receiver.deactivate());
+    let mut app = tide::with_state(ReceiveWrapper::new(receiver, "Unknown"));
     app.at("/").get(|_| async move {
         Ok(Response::builder(200)
             .body(fs::read_to_string("assets/index.html").await.unwrap())
             .content_type(mime::HTML)
             .build())
     });
-    app.at("/socket").get(WebSocket::new(|req: Request<InactiveReceiver<String>>, mut stream| async move {
-        let mut receiver = req.state().activate_cloned();
+    app.at("/socket").get(WebSocket::new(|req: Request<ReceiveWrapper<String>>, mut stream| async move {
+        let (state, mut receiver) = req.state().subscribe().await;
+        stream.send_string(state).await?;
         loop {
             select! {
                 msg = stream.next().fuse() => match msg {
@@ -67,6 +70,44 @@ async fn main() -> Result<()> {
     }));
     app.listen("127.0.0.1:8080").await?;
     Ok(())
+}
+
+#[derive(Clone)]
+struct ReceiveWrapper<T> {
+    receiver: InactiveReceiver<T>,
+    last_value: Arc<Mutex<T>>,
+    _handle: Arc<JoinHandle<()>>
+}
+
+impl<T> ReceiveWrapper<T>
+    where T: Clone + Send + Sync + 'static
+{
+
+    fn new(receiver: Receiver<T>, default_value: impl Into<T>) -> Self {
+        let last_value = Arc::new(Mutex::new(default_value.into()));
+        let _handle = Arc::new({
+            let last_value = last_value.clone();
+            let mut receiver = receiver.clone();
+            task::spawn(async move {
+                while let Some(val) = receiver.next().await {
+                    let mut x = last_value.lock_arc().await;
+                    *x = val;
+                }
+            })
+        });
+        Self {
+            receiver: receiver.deactivate(),
+            last_value,
+            _handle
+        }
+    }
+
+    async fn subscribe(&self) -> (T, Receiver<T>) {
+        let receiver = self.receiver.activate_cloned();
+        let value = self.last_value.lock_arc().await.clone();
+        (value, receiver)
+    }
+
 }
 
 /*
