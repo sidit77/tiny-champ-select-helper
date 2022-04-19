@@ -1,57 +1,72 @@
-mod lcu;
+//mod lcu;
 
-use std::time::Instant;
 use anyhow::{Result};
-use async_std::fs;
-use futures::StreamExt;
+use async_broadcast::{InactiveReceiver, TrySendError};
+use async_std::{fs};
+use async_std::io::{BufReader, stdin};
+use async_std::io::prelude::BufReadExt;
+use futures::{FutureExt, select, StreamExt};
 use log::LevelFilter;
-use serde_json::Value;
 use tide::{Request, Response};
 use tide::http::mime;
 use tide_websockets::{Message, WebSocket};
-use crate::lcu::RiotLockFile;
 
 #[async_std::main]
 async fn main() -> Result<()> {
     env_logger::builder()
         .filter_level(LevelFilter::Debug)
-        //.filter(Some("tungstenite"), LevelFilter::Trace)
+        .filter(Some("tungstenite::protocol"), LevelFilter::Info)
         .filter(Some("tide::log::middleware"), LevelFilter::Warn)
         .format_timestamp(None)
         //.format_target(false)
         .parse_default_env()
         .init();
 
-    let mut app = tide::with_state(Instant::now());
-    app.at("/").get(main_site);
-    app.at("/time").get(time);
-    app.at("/socket").get(WebSocket::new(|_req, mut stream| async move {
-        while let Some(Ok(Message::Text(input))) = stream.next().await {
-            let output: String = input.chars().rev().collect();
+    let (mut sender, receiver) = async_broadcast::broadcast(10);
 
-            stream
-                .send_string(format!("{} | {}", &input, &output))
-                .await?;
+    let _handler = async_std::task::spawn(async move {
+        sender.set_overflow(true);
+        let mut lines = BufReader::new(stdin()).lines().fuse();
+        loop {
+            match lines.next().await {
+                Some(Ok(line)) => match sender.try_broadcast(line) {
+                    Ok(_) | Err(TrySendError::Inactive(_)) => {},
+                    Err(TrySendError::Closed(_)) => break,
+                    Err(TrySendError::Full(_)) => unreachable!()
+                },
+                Some(Err(e)) => log::error!("{}", e),
+                None => break
+            }
+        }
+    });
+
+    let mut app = tide::with_state(receiver.deactivate());
+    app.at("/").get(|_| async move {
+        Ok(Response::builder(200)
+            .body(fs::read_to_string("assets/index.html").await.unwrap())
+            .content_type(mime::HTML)
+            .build())
+    });
+    app.at("/socket").get(WebSocket::new(|req: Request<InactiveReceiver<String>>, mut stream| async move {
+        let mut receiver = req.state().activate_cloned();
+        loop {
+            select! {
+                msg = stream.next().fuse() => match msg {
+                    Some(Ok(Message::Close(_))) => {}
+                    Some(msg) => log::info!("Got unexpected message: {:?}", msg),
+                    None => break
+                },
+                msg = receiver.next().fuse() => match msg {
+                    Some(msg) => stream.send_string(msg).await?,
+                    None => break
+                }
+            }
         }
         log::info!("Connection closed");
         Ok(())
     }));
     app.listen("127.0.0.1:8080").await?;
     Ok(())
-}
-
-async fn main_site(_: Request<Instant>) -> tide::Result<Response> {
-    Ok(Response::builder(200)
-        .body(fs::read_to_string("assets/index.html").await.unwrap())
-        .content_type(mime::HTML)
-        .build())
-}
-
-async fn time(req: Request<Instant>) -> tide::Result<Response> {
-    Ok(Response::builder(200)
-        .body(req.state().elapsed().as_secs().to_string())
-        .content_type(mime::PLAIN)
-        .build())
 }
 
 /*
@@ -107,47 +122,5 @@ async fn main() -> Result<()> {
             Err(err) => log::warn!("{}", err)
         }
     }
-}
-*/
-
-/*
-use horrorshow::html;
-use tide::{Request, Response};
-use tide::http::{mime};
-use tide::prelude::*;
-
-#[derive(Debug, Deserialize)]
-struct Animal {
-    name: String,
-    legs: u8,
-}
-
-#[async_std::main]
-async fn main() -> tide::Result<()> {
-    let mut app = tide::new();
-    app.at("/").get(main_site);
-    app.at("/orders/shoes").post(order_shoes);
-    app.listen("127.0.0.1:8080").await?;
-    Ok(())
-}
-
-async fn main_site(_: Request<()>) -> tide::Result<Response> {
-
-    let body = html! {
-        style { : "* { font-family: sans-serif}" }
-        body {
-            : "Hello World"
-        }
-    };
-
-    Ok(Response::builder(200)
-        .body(format!("{}", body))
-        .content_type(mime::HTML)
-        .build())
-}
-
-async fn order_shoes(mut req: Request<()>) -> tide::Result {
-    let Animal { name, legs } = req.body_json().await?;
-    Ok(format!("Hello, {}! I've put in an order for {} shoes", name, legs).into())
 }
 */

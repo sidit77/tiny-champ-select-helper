@@ -32,22 +32,8 @@
         </span>
     </body>
     <script>
-        function createWebSocket(path) {
-            const protocolPrefix = (window.location.protocol === 'https:') ? 'wss:' : 'ws:';
-            return new WebSocket(protocolPrefix + '//' + location.host + path);
-        }
-
-        const socket = createWebSocket('/socket');
-
-        let loop = undefined;
-
-        socket.addEventListener('open', () =>  {
-            loop = setInterval(() => fetch("/time")
-                .then(async r => socket.send(await r.text())), 1000);
-        });
-
-        socket.addEventListener('close', () => clearInterval(loop));
-
+        const socket = new WebSocket(`ws://${location.host}/socket`);
+        socket.addEventListener('close', () => window.close());
         socket.addEventListener('message', event => document.getElementById("line").innerText = event.data);
     </script>
 </html>
