@@ -1,0 +1,53 @@
+<!DOCTYPE HTML>
+<html lang="en">
+<head>
+    <meta content="text/html;charset=utf-8" http-equiv="Content-Type"/>
+    <title>Champ Select Helper</title>
+    <style>
+        html {
+            width: 100%;
+            height: 100%;
+        }
+        body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: lemonchiffon;
+            text-align: center;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        span {
+            color: rebeccapurple;
+            font-size: 10em;
+            font-family: monospace;
+        }
+    </style>
+</head>
+    <body>
+        <span id = "line">
+            Hello World
+        </span>
+    </body>
+    <script>
+        function createWebSocket(path) {
+            const protocolPrefix = (window.location.protocol === 'https:') ? 'wss:' : 'ws:';
+            return new WebSocket(protocolPrefix + '//' + location.host + path);
+        }
+
+        const socket = createWebSocket('/socket');
+
+        let loop = undefined;
+
+        socket.addEventListener('open', () =>  {
+            loop = setInterval(() => fetch("/time")
+                .then(async r => socket.send(await r.text())), 1000);
+        });
+
+        socket.addEventListener('close', () => clearInterval(loop));
+
+        socket.addEventListener('message', event => document.getElementById("line").innerText = event.data);
+    </script>
+</html>

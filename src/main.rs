@@ -1,10 +1,60 @@
 mod lcu;
 
+use std::time::Instant;
 use anyhow::{Result};
+use async_std::fs;
+use futures::StreamExt;
 use log::LevelFilter;
 use serde_json::Value;
+use tide::{Request, Response};
+use tide::http::mime;
+use tide_websockets::{Message, WebSocket};
 use crate::lcu::RiotLockFile;
 
+#[async_std::main]
+async fn main() -> Result<()> {
+    env_logger::builder()
+        .filter_level(LevelFilter::Debug)
+        //.filter(Some("tungstenite"), LevelFilter::Trace)
+        .filter(Some("tide::log::middleware"), LevelFilter::Warn)
+        .format_timestamp(None)
+        //.format_target(false)
+        .parse_default_env()
+        .init();
+
+    let mut app = tide::with_state(Instant::now());
+    app.at("/").get(main_site);
+    app.at("/time").get(time);
+    app.at("/socket").get(WebSocket::new(|_req, mut stream| async move {
+        while let Some(Ok(Message::Text(input))) = stream.next().await {
+            let output: String = input.chars().rev().collect();
+
+            stream
+                .send_string(format!("{} | {}", &input, &output))
+                .await?;
+        }
+        log::info!("Connection closed");
+        Ok(())
+    }));
+    app.listen("127.0.0.1:8080").await?;
+    Ok(())
+}
+
+async fn main_site(_: Request<Instant>) -> tide::Result<Response> {
+    Ok(Response::builder(200)
+        .body(fs::read_to_string("assets/index.html").await.unwrap())
+        .content_type(mime::HTML)
+        .build())
+}
+
+async fn time(req: Request<Instant>) -> tide::Result<Response> {
+    Ok(Response::builder(200)
+        .body(req.state().elapsed().as_secs().to_string())
+        .content_type(mime::PLAIN)
+        .build())
+}
+
+/*
 #[async_std::main]
 async fn main() -> Result<()> {
     env_logger::builder()
@@ -58,6 +108,7 @@ async fn main() -> Result<()> {
         }
     }
 }
+*/
 
 /*
 use horrorshow::html;
