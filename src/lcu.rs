@@ -123,16 +123,16 @@ impl LcuWebSocket {
     //                      format!("OnJsonApiEvent{}", endpoint.as_ref()).replace("/", "_"))).await
     //}
 
-    pub async fn read(&mut self) -> Result<(String, Value)> {
+    pub async fn read(&mut self) -> Result<Option<(String, Value)>> {
         loop {
-            let msg = self.socket.next().await
-                .ok_or_else(||anyhow!("End of stream"))??;
+            let msg = self.socket.next().await.transpose()?;
 
             match msg {
-                Message::Text(str) if !str.is_empty() => {
+                Some(Message::Text(str)) if !str.is_empty() => {
                     let event = serde_json::from_str::<Event>(&str)?;
-                    return Ok((event.2.uri, event.2.data))
-                }
+                    return Ok(Some((event.2.uri, event.2.data)))
+                },
+                None => return Ok(None),
                 _ => continue
             }
 

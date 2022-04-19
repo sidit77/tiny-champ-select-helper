@@ -135,7 +135,7 @@ async fn main() -> Result<()> {
 
         loop {
             match socket.read().await {
-                Ok((uri, json)) if uri == "/lol-gameflow/v1/gameflow-phase" => {
+                Ok(Some((uri, json))) if uri == "/lol-gameflow/v1/gameflow-phase" => {
                     match json.as_str() {
                         Some(state) => {
                             status.update(&client, ClientState::from(state)).await;
@@ -148,10 +148,14 @@ async fn main() -> Result<()> {
                         None => log::warn!("Invalid data")
                     }
                 },
-                Ok(tuple) => log::warn!("Unknown event: {:?}", tuple),
+                Ok(Some(tuple)) => log::warn!("Unknown event: {:?}", tuple),
+                Ok(None) => break,
                 Err(err) => log::warn!("{}", err)
             }
         }
+
+        status.update(&client, ClientState::Closed).await;
+        sender.try_broadcast(status.clone()).ignore();
     });
 
 
