@@ -9,8 +9,8 @@ use async_std::{fs, task};
 use async_std::prelude::FutureExt as AsyncStdFutureExt;
 use async_std::sync::{Mutex, Arc};
 use async_std::task::JoinHandle;
+use error_tools::IgnoreResult;
 use futures::{FutureExt, select, StreamExt};
-use ignore_result::Ignore;
 use log::LevelFilter;
 use tide::{Request, Response};
 use tide::http::mime;
@@ -131,11 +131,14 @@ async fn run(address: &str) -> Result<()> {
                 Ok(Some((uri, json))) if uri == "/lol-gameflow/v1/gameflow-phase" => {
                     match json.as_str() {
                         Some(state) => {
-                            status.update(&client, ClientState::from(state)).await;
-                            match sender.try_broadcast(status.clone()) {
-                                Ok(_) | Err(TrySendError::Inactive(_)) => {},
-                                Err(TrySendError::Closed(_)) => break,
-                                Err(TrySendError::Full(_)) => unreachable!()
+                            let state = ClientState::from(state);
+                            if state != status.state {
+                                status.update(&client, state).await;
+                                match sender.try_broadcast(status.clone()) {
+                                    Ok(_) | Err(TrySendError::Inactive(_)) => {},
+                                    Err(TrySendError::Closed(_)) => break,
+                                    Err(TrySendError::Full(_)) => unreachable!()
+                                }
                             }
                         },
                         None => log::warn!("Invalid data")
@@ -197,7 +200,6 @@ async fn run(address: &str) -> Result<()> {
                 }
             }
         }
-        log::info!("Connection closed");
         Ok(())
     }));
     app.listen(address).await?;

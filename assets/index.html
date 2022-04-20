@@ -10,28 +10,61 @@
         }
         body {
             margin: 0;
-            padding: 0;
             width: 100%;
             height: 100%;
-            background-color: lemonchiffon;
-            text-align: center;
+            background-color: darkslategray;
             display: flex;
-            justify-content: center;
+            flex-direction: column;
+        }
+        #line {
+            color: lightskyblue;
+            font-family: monospace;
+            font-size: 15px;
+            margin: 5px;
+        }
+        #header {
+            height: 30px;
+            display: flex;
             align-items: center;
         }
-        span {
-            color: rebeccapurple;
-            font-size: 2em;
-            font-family: monospace;
+        #iframe {
+            border-width: 0;
+            width: 100%;
+            height: 100%;
         }
     </style>
 </head>
     <body>
-        <span id = "line"></span>
+        <iframe id="iframe" src="https://euw.op.gg/"></iframe>
+        <div id="header">
+            <span id = "line"></span>
+        </div>
     </body>
     <script>
         const socket = new WebSocket(`ws://${location.host}/socket`);
-        socket.addEventListener('close', () => window.close());
-        socket.addEventListener('message', event => document.getElementById("line").innerText = event.data);
+        socket.addEventListener('close', () => {
+            document.getElementById("iframe").hidden = true;
+            window.close();
+        });
+        socket.addEventListener('message', event => {
+            document.getElementById("line").innerText = event.data;
+            const state = JSON.parse(event.data);
+            const frame = document.getElementById("iframe");
+            switch (state.state) {
+                case "Closed":
+                    frame.src = "https://op.gg";
+                    break;
+                case "Idle":
+                    frame.src = `https://op.gg/summoners/${state.info.server}/${state.info.username}`;
+                    break;
+                case "ChampSelect":
+                    frame.src = `https://op.gg/multisearch/${state.info.server}?summoners=${encodeURIComponent(state.additional_info.join(','))}`;
+                    console.log(frame.src)
+                    break;
+                case "InGame":
+                    frame.src = `https://op.gg/summoners/${state.info.server}/${state.info.username}/ingame`;
+                    break;
+            }
+        });
     </script>
 </html>

@@ -902,6 +902,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "error-tools"
+version = "0.1.0"
+source = "git+https://github.com/sidit77/error-tools.git#1fdf0fc7a2fe1d964eae1cfc3ec96bdd066f079f"
+
+[[package]]
 name = "event-listener"
 version = "2.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1455,12 +1460,6 @@ dependencies = [
  "unicode-bidi",
  "unicode-normalization",
 ]
-
-[[package]]
-name = "ignore-result"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "665ff4dce8edd10d490641ccb78949832f1ddbff02c584fb1f85ab888fe0e50c"
 
 [[package]]
 name = "infer"
@@ -2733,9 +2732,9 @@ dependencies = [
  "async-std",
  "async-tungstenite 0.16.1",
  "env_logger",
+ "error-tools",
  "futures",
  "http",
- "ignore-result",
  "log",
  "serde",
  "serde_json",
