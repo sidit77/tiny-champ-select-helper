@@ -1,9 +1,12 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod lcu;
 
 use std::fmt::Debug;
 use anyhow::{Result};
 use async_broadcast::{InactiveReceiver, Receiver, TrySendError};
 use async_std::{fs, task};
+use async_std::prelude::FutureExt as AsyncStdFutureExt;
 use async_std::sync::{Mutex, Arc};
 use async_std::task::JoinHandle;
 use futures::{FutureExt, select, StreamExt};
@@ -15,6 +18,7 @@ use tide_websockets::{Message, WebSocket};
 use serde::{Serialize};
 use serde_json::Value;
 use surf::Client;
+use tray_item::TrayItem;
 use crate::lcu::RiotLockFile;
 
 #[derive(Debug, Clone, Serialize)]
@@ -108,18 +112,7 @@ impl ClientStatus {
 
 }
 
-#[async_std::main]
-async fn main() -> Result<()> {
-    env_logger::builder()
-        .filter_level(LevelFilter::Debug)
-        .filter(Some("tungstenite::protocol"), LevelFilter::Info)
-        .filter(Some("tungstenite::handshake::client"), LevelFilter::Info)
-        .filter(Some("tide::log::middleware"), LevelFilter::Warn)
-        .format_timestamp(None)
-        //.format_target(false)
-        .parse_default_env()
-        .init();
-
+async fn run(address: &str) -> Result<()> {
     let (mut sender, receiver) = async_broadcast::broadcast(10);
 
     let lockfile = RiotLockFile::read("D:\\Games\\Riot Games\\League of Legends\\lockfile")?;
@@ -180,7 +173,11 @@ async fn main() -> Result<()> {
     let mut app = tide::with_state(ReceiveWrapper::new(receiver));
     app.at("/").get(|_| async move {
         Ok(Response::builder(200)
-            .body(fs::read_to_string("assets/index.html").await.unwrap())
+            .body( if cfg!(debug_assertions) {
+                fs::read_to_string("assets/index.html").await.unwrap()
+            } else {
+                include_str!("../assets/index.html").to_string()
+            })
             .content_type(mime::HTML)
             .build())
     });
@@ -203,7 +200,7 @@ async fn main() -> Result<()> {
         log::info!("Connection closed");
         Ok(())
     }));
-    app.listen("127.0.0.1:8080").await?;
+    app.listen(address).await?;
     Ok(())
 }
 
@@ -251,6 +248,34 @@ impl<T> ReceiveWrapper<T>
         (value, receiver)
     }
 
+}
+
+fn main() -> Result<()> {
+    env_logger::builder()
+        .filter_level(LevelFilter::Debug)
+        .filter(Some("tungstenite::protocol"), LevelFilter::Info)
+        .filter(Some("tungstenite::handshake::client"), LevelFilter::Info)
+        .filter(Some("tide::log::middleware"), LevelFilter::Warn)
+        .format_timestamp(None)
+        //.format_target(false)
+        .parse_default_env()
+        .init();
+
+    let address = "127.0.0.1:43257";
+    let open = move || webbrowser::open(&format!("http://{}", address)).unwrap();
+
+    let quitter = async_ctrlc::CtrlC::new()?;
+
+    let (sender, mut receiver) = async_std::channel::bounded(2);
+    let mut tray = TrayItem::new("Tray Example", "favicon").unwrap();
+    tray.add_menu_item("Open", open).unwrap();
+    tray.add_menu_item("Quit", move || {
+        sender.try_send(()).unwrap();
+    }).unwrap();
+    let quitter = quitter.race(receiver.next().map(|r|r.unwrap()));
+
+    open();
+    task::block_on(run(address).race(quitter.map(|_ | Ok(()))))
 }
 
 /*
