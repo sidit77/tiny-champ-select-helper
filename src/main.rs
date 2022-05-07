@@ -5,6 +5,7 @@ mod config;
 mod client_state;
 mod util;
 
+use std::path::Path;
 use anyhow::{Result};
 use async_broadcast::TrySendError;
 use async_std::{fs, task};
@@ -18,13 +19,14 @@ use tide::http::mime;
 use tide_websockets::{Message, WebSocket};
 use tray_item::TrayItem;
 use crate::client_state::{ClientState, ClientStatus};
+use crate::config::Config;
 use crate::lcu::RiotLockFile;
 use crate::util::ReceiveWrapper;
 
-async fn run(address: &str) -> Result<()> {
+async fn run(config: &Config) -> Result<()> {
     let (mut sender, receiver) = async_broadcast::broadcast(10);
 
-    let lockfile = RiotLockFile::read("D:\\Games\\Riot Games\\League of Legends\\lockfile")?;
+    let lockfile = RiotLockFile::read(Path::new(&config.client_path).join("lockfile"))?;
 
     let _handler = async_std::task::spawn(async move {
         sender.set_overflow(true);
@@ -92,7 +94,7 @@ async fn run(address: &str) -> Result<()> {
         }
         Ok(())
     }));
-    app.listen(address).await?;
+    app.listen(&config.server_url).await?;
     Ok(())
 }
 
@@ -107,19 +109,23 @@ fn main() -> Result<()> {
         .parse_default_env()
         .init();
 
-    let address = "127.0.0.1:43257";
-    let open = move || webbrowser::open(&format!("http://{}", address)).unwrap();
+    let config = Config::initialize()?;
+
+    let open = {
+        let addrs = config.server_url.clone();
+        move || webbrowser::open(&format!("http://{}", addrs)).unwrap()
+    };
 
     let quitter = async_ctrlc::CtrlC::new()?;
 
     let (sender, mut receiver) = async_std::channel::bounded(2);
-    let mut tray = TrayItem::new("Tray Example", "favicon").unwrap();
-    tray.add_menu_item("Open", open).unwrap();
+    let mut tray = TrayItem::new("Tiny Champ Select Helper", "favicon").unwrap();
+    tray.add_menu_item("Open", open.clone()).unwrap();
     tray.add_menu_item("Quit", move || {
         sender.try_send(()).unwrap();
     }).unwrap();
     let quitter = quitter.race(receiver.next().map(|r|r.unwrap()));
 
     open();
-    task::block_on(run(address).race(quitter.map(|_ | Ok(()))))
+    task::block_on(run(&config).race(quitter.map(|_ | Ok(()))))
 }
