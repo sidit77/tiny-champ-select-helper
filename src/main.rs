@@ -6,6 +6,7 @@ mod client_state;
 mod util;
 
 use std::path::Path;
+use std::time::Duration;
 use anyhow::{Result};
 use async_broadcast::TrySendError;
 use async_std::{fs, task};
@@ -23,6 +24,7 @@ use crate::config::Config;
 use crate::lcu::RiotLockFile;
 use crate::util::ReceiveWrapper;
 
+
 async fn run(config: &Config) -> Result<()> {
     let (mut sender, receiver) = async_broadcast::broadcast(10);
 
@@ -36,7 +38,13 @@ async fn run(config: &Config) -> Result<()> {
             log::info!("found lockfile");
             let (client, mut socket) = lockfile.connect().await.unwrap();
 
-            let mut status = ClientStatus::load_from(&client).await;
+            let mut status = loop {
+                match ClientStatus::load_from(&client).await {
+                    Ok(res) => break res,
+                    Err(err) => log::error!("Error occurred. Retrying...\n{}", err)
+                };
+                task::sleep(Duration::from_millis(500)).await;
+            };
             sender.try_broadcast(status.clone()).ignore();
 
             socket.subscribe("/lol-gameflow/v1/gameflow-phase").await.unwrap();
@@ -48,7 +56,14 @@ async fn run(config: &Config) -> Result<()> {
                             Some(state) => {
                                 let state = ClientState::from(state);
                                 if state != status.state {
-                                    status.update(&client, state).await;
+                                    //retry(Duration::from_millis(500), || status.update(&client, state)).await;
+                                    loop {
+                                        match status.update(&client, state).await {
+                                            Ok(res) => break res,
+                                            Err(err) => log::error!("Error occurred. Retrying...\n{}", err)
+                                        };
+                                        task::sleep(Duration::from_millis(500)).await;
+                                    }
                                     match sender.try_broadcast(status.clone()) {
                                         Ok(_) | Err(TrySendError::Inactive(_)) => {},
                                         Err(TrySendError::Closed(_)) => break 'outer,
@@ -65,7 +80,7 @@ async fn run(config: &Config) -> Result<()> {
                 }
             }
 
-            status.update(&client, ClientState::Closed).await;
+            status.update(&client, ClientState::Closed).await.unwrap();
             sender.try_broadcast(status.clone()).ignore();
         }
 
