@@ -27,6 +27,7 @@ webbrowser = "0.6.0"
 error-tools = {git = "https://github.com/sidit77/error-tools.git"}
 directories = "4.0.1"
 native-dialog = "0.6.3"
+notify = "5.0.0-pre.15"
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1.12"

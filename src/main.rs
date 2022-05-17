@@ -26,43 +26,49 @@ use crate::util::ReceiveWrapper;
 async fn run(config: &Config) -> Result<()> {
     let (mut sender, receiver) = async_broadcast::broadcast(10);
 
-    let lockfile = RiotLockFile::read(Path::new(&config.client_path).join("lockfile"))?;
+    let lockfile_path = Path::new(&config.client_path).join("lockfile");
 
     let _handler = async_std::task::spawn(async move {
         sender.set_overflow(true);
-        let (client, mut socket) = lockfile.connect().await.unwrap();
 
-        let mut status = ClientStatus::load_from(&client).await;
-        sender.try_broadcast(status.clone()).ignore();
+        'outer: loop {
+            let lockfile = RiotLockFile::read(&lockfile_path).await.unwrap();
+            log::info!("found lockfile");
+            let (client, mut socket) = lockfile.connect().await.unwrap();
 
-        socket.subscribe("/lol-gameflow/v1/gameflow-phase").await.unwrap();
+            let mut status = ClientStatus::load_from(&client).await;
+            sender.try_broadcast(status.clone()).ignore();
 
-        loop {
-            match socket.read().await {
-                Ok(Some((uri, json))) if uri == "/lol-gameflow/v1/gameflow-phase" => {
-                    match json.as_str() {
-                        Some(state) => {
-                            let state = ClientState::from(state);
-                            if state != status.state {
-                                status.update(&client, state).await;
-                                match sender.try_broadcast(status.clone()) {
-                                    Ok(_) | Err(TrySendError::Inactive(_)) => {},
-                                    Err(TrySendError::Closed(_)) => break,
-                                    Err(TrySendError::Full(_)) => unreachable!()
+            socket.subscribe("/lol-gameflow/v1/gameflow-phase").await.unwrap();
+
+            loop {
+                match socket.read().await {
+                    Ok(Some((uri, json))) if uri == "/lol-gameflow/v1/gameflow-phase" => {
+                        match json.as_str() {
+                            Some(state) => {
+                                let state = ClientState::from(state);
+                                if state != status.state {
+                                    status.update(&client, state).await;
+                                    match sender.try_broadcast(status.clone()) {
+                                        Ok(_) | Err(TrySendError::Inactive(_)) => {},
+                                        Err(TrySendError::Closed(_)) => break 'outer,
+                                        Err(TrySendError::Full(_)) => unreachable!()
+                                    }
                                 }
-                            }
-                        },
-                        None => log::warn!("Invalid data")
-                    }
-                },
-                Ok(Some(tuple)) => log::warn!("Unknown event: {:?}", tuple),
-                Ok(None) => break,
-                Err(err) => log::warn!("{}", err)
+                            },
+                            None => log::warn!("Invalid data")
+                        }
+                    },
+                    Ok(Some(tuple)) => log::warn!("Unknown event: {:?}", tuple),
+                    Ok(None) => break,
+                    Err(err) => log::warn!("{}", err)
+                }
             }
+
+            status.update(&client, ClientState::Closed).await;
+            sender.try_broadcast(status.clone()).ignore();
         }
 
-        status.update(&client, ClientState::Closed).await;
-        sender.try_broadcast(status.clone()).ignore();
     });
 
     let mut app = tide::with_state(ReceiveWrapper::new(receiver));
@@ -98,6 +104,7 @@ async fn run(config: &Config) -> Result<()> {
     Ok(())
 }
 
+
 fn main() -> Result<()> {
     env_logger::builder()
         .filter_level(LevelFilter::Debug)
@@ -110,7 +117,6 @@ fn main() -> Result<()> {
         .init();
 
     let config = Config::initialize()?;
-
     let open = {
         let addrs = config.server_url.clone();
         move || webbrowser::open(&format!("http://{}", addrs)).unwrap()

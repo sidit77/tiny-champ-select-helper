@@ -1,13 +1,16 @@
-use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use anyhow::{anyhow, Result};
 use async_native_tls::{Certificate, TlsConnector};
+use async_std::{fs, task};
 use async_tungstenite::async_std::{connect_async_with_tls_connector, ConnectStream};
 use async_tungstenite::tungstenite::Message;
 use async_tungstenite::WebSocketStream;
+use error_tools::IgnoreResult;
 use futures::{SinkExt, StreamExt};
 use http::Request;
+use notify::{RecommendedWatcher, RecursiveMode, Watcher, EventKind};
 use surf::{Client, Config};
 use surf::http::auth::BasicAuth;
 use serde::{Serialize, Deserialize};
@@ -25,10 +28,17 @@ pub struct RiotLockFile {
     pub address: String,
 }
 
+
 impl RiotLockFile {
 
-    pub fn read<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let contents = fs::read_to_string(path)?;
+    pub async fn read<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
+        if !path.exists() {
+            wait_for(path).await?;
+            task::sleep(Duration::from_secs(5)).await
+        }
+
+        let contents = fs::read_to_string(path).await?;
 
         let pieces: Vec<&str> = contents.split(':').collect();
 
@@ -77,6 +87,27 @@ impl RiotLockFile {
         }))
     }
 
+}
+
+async fn wait_for<P: AsRef<Path>>(path: P) -> notify::Result<()> {
+    let path = path.as_ref();
+    let (tx, mut rx) = async_std::channel::unbounded();
+    let mut watcher = RecommendedWatcher::new(move |event: notify::Result<notify::Event>| tx.try_send(event).ignore())?;
+    watcher.watch(path.parent().unwrap(), RecursiveMode::NonRecursive)?;
+    log::trace!("Started to watch for {:?}", path);
+    while let Some(event) = rx.next().await {
+        match event {
+            Ok(event) => {
+                log::trace!("Got event: {:?}", event);
+                if matches!(event.kind, EventKind::Create(_)) && event.paths.iter().any(|p| p == path) {
+                    log::trace!("Found expected file");
+                    return Ok(())
+                }
+            }
+            Err(e) => return Err(e)
+        }
+    }
+    return Err(notify::Error::generic("Watched stopped unexpectedly"))
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize_repr, Deserialize_repr)]
