@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Result, Context};
 use async_native_tls::{Certificate, TlsConnector};
 use async_std::{fs, task};
 use async_tungstenite::async_std::{connect_async_with_tls_connector, ConnectStream};
@@ -16,6 +16,7 @@ use surf::http::auth::BasicAuth;
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
 use serde_repr::{Serialize_repr, Deserialize_repr};
+use crate::Asset;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RiotLockFile {
@@ -63,7 +64,7 @@ impl RiotLockFile {
 
     pub async fn connect(&self) -> Result<(Client, LcuWebSocket)> {
         let auth = BasicAuth::new(&self.username, &self.password);
-        let cert = Certificate::from_pem(include_bytes!("../assets/riotgames.pem"))?;
+        let cert = Certificate::from_pem(Asset::get("riotgames.pem").context("can't find cert")?.data.as_ref())?;
 
         let client = Config::new()
             .set_base_url(format!("{}://{}:{}", self.protocol, self.address, self.port).parse()?)

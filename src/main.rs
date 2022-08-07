@@ -9,21 +9,26 @@ use std::path::Path;
 use std::time::Duration;
 use anyhow::{Result};
 use async_broadcast::TrySendError;
-use async_std::{fs, task};
+use async_std::{task};
 use async_std::prelude::FutureExt as AsyncStdFutureExt;
 use error_tools::IgnoreResult;
 use futures::{FutureExt, StreamExt};
 use futures::future::Either;
 use log::LevelFilter;
-use tide::{Request, Response};
-use tide::http::mime;
+use tide::{Body, Redirect, Request, Response};
+use tide::http::{mime, Mime};
 use tide_websockets::{Message, WebSocket};
 use tray_item::TrayItem;
+use rust_embed::{EmbeddedFile, RustEmbed};
+use surf::StatusCode;
 use crate::client_state::{ClientState, ClientStatus};
 use crate::config::Config;
 use crate::lcu::RiotLockFile;
 use crate::util::ReceiveWrapper;
 
+#[derive(RustEmbed)]
+#[folder = "assets/"]
+pub struct Asset;
 
 async fn run(config: &Config) -> Result<()> {
     let (mut sender, receiver) = async_broadcast::broadcast(10);
@@ -87,16 +92,31 @@ async fn run(config: &Config) -> Result<()> {
     });
 
     let mut app = tide::with_state(ReceiveWrapper::new(receiver));
-    app.at("/").get(|_| async move {
-        Ok(Response::builder(200)
-            .body( if cfg!(debug_assertions) {
-                fs::read_to_string("assets/index.html").await.unwrap()
-            } else {
-                include_str!("../assets/index.html").to_string()
-            })
-            .content_type(mime::HTML)
-            .build())
+    app.at("*").get(|req: tide::Request<ReceiveWrapper<ClientStatus>> | async move {
+        let path = req.url().path().trim_start_matches('/');
+        log::debug!("trying to load {}", path);
+        let asset: Option<EmbeddedFile> = Asset::get(path);
+
+        match asset {
+            None => Ok(Response::new(StatusCode::NotFound)),
+            Some(file) => {
+                let mime = Mime::sniff(file.data.as_ref())
+                    .ok()
+                    .or_else(|| Path::new(path)
+                        .extension()
+                        .map(|p| p.to_str())
+                        .flatten()
+                        .and_then(Mime::from_extension))
+                    .unwrap_or(mime::BYTE_STREAM);
+                log::debug!("detected mime type: {}", mime);
+                Ok(Response::builder(StatusCode::Ok)
+                    .body(Body::from_bytes(file.data.into()))
+                    .content_type(mime)
+                    .build())
+            }
+        }
     });
+    app.at("/").get(Redirect::permanent("/index.html"));
     app.at("/socket").get(WebSocket::new(|req: Request<ReceiveWrapper<ClientStatus>>, mut stream| async move {
         let (state, mut receiver) = req.state().subscribe().await;
         stream.send_string(serde_json::to_string(&state)?).await?;
